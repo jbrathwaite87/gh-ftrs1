@@ -1,0 +1,36 @@
+name: Main Workflow for Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target Environment (dev, tst, prd)'
+        required: true
+        type: choice
+        options:
+          - dev
+          - tst
+          - prd
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  analysis:
+    uses: ./.github/workflows/analysis.yml
+    with:
+      environment: ${{ github.event.inputs.environment }}
+    secrets: inherit
+
+  destroy:
+    needs: analysis
+    uses: ./.github/workflows/destroy.yml
+    with:
+      action: destroy
+      environment: ${{ github.event.inputs.environment }}
+    secrets: inherit

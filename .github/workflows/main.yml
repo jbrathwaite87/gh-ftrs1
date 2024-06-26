@@ -1,0 +1,49 @@
+name: Main Workflow for Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Terraform Action (apply or destroy)'
+        required: true
+        type: choice
+        options:
+          - apply
+          - destroy
+      environment:
+        description: 'Target Environment (dev, tst, prd)'
+        required: true
+        type: choice
+        options:
+          - dev
+          - tst
+          - prd
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+  actions: read
+  checks: read
+  deployments: read
+  issues: read
+  packages: read
+  statuses: read
+
+jobs:
+  analysis:
+    uses: ./.github/workflows/analysis.yml
+    with:
+      environment: ${{ github.event.inputs.environment }}
+    secrets: inherit
+
+  deploy:
+    needs: analysis
+    uses: ./.github/workflows/deploy.yml
+    with:
+      action: ${{ github.event.inputs.action }}
+      environment: ${{ github.event.inputs.environment }}
+    secrets: inherit

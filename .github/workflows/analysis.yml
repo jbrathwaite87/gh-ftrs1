@@ -1,0 +1,121 @@
+name: Analyze the Terraform
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_USE_AZUREAD: true
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}/deployment_files/${{ inputs.environment }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: HashiCorp - Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Cache Terraform Plugins
+        uses: actions/cache@v4.0.2
+        with:
+          path: ~/.terraform.d/plugin-cache
+          key: ${{ runner.os }}-terraform-${{ hashFiles('**/*.tf') }}
+          restore-keys: |
+            ${{ runner.os }}-terraform-
+
+      - name: Terraform Fmt
+        run: terraform fmt -check
+
+      - name: Install TFLint
+        run: |
+          curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+
+      - name: Run TFLint
+        run: |
+          tflint --init
+          tflint || true
+
+      #- name: Checkov
+        #uses: bridgecrewio/checkov-action@v2
+        #with:
+          #framework: terraform,azure
+          #directory: ${{ github.workspace }}/deployment_files/${{ inputs.environment }}
+
+      - name: GitLeaks
+        uses: gitleaks/gitleaks-action@v2.3.6
+        with:
+          config_path: .github/gitleaks/gitleaks.toml
+          args: "--redact --path=${{ github.workspace }}"
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ secrets.BACKEND_AZURE_RESOURCE_GROUP_NAME }}" \
+            -backend-config="storage_account_name=${{ secrets.BACKEND_AZURE_STORAGE_ACCOUNT_NAME }}" \
+            -backend-config="container_name=${{ secrets.BACKEND_AZURE_STORAGE_ACCOUNT_CONTAINER_NAME }}" \
+            -backend-config="key=terraform.tfstate"
+
+      - name: Terraform Validate
+        run: terraform validate -no-color
+
+      - name: tfsec
+        uses: aquasecurity/tfsec-pr-commenter-action@v1.2.0
+        with:
+          tfsec_args: --soft-fail
+          github_token: ${{ github.token }}
+
+      - name: Terraform Plan
+        run: terraform plan -var "resource_group_name=${{ secrets.AZURE_RESOURCE_GROUP_NAME }}" -out=tfplan
+
+      - name: Update Pull Request with Check Results
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            if (!context.issue.number) {
+              console.log("No issue number found. Skipping comment creation.");
+              return;
+            }
+
+            const tflintResults = `### TFLint Warnings\n\n`;
+            const checkovResults = `### Checkov Warnings\n\n`;
+            const gitleaksResults = `### GitLeaks Warnings\n\n`;
+            const tfsecResults = `### tfsec Warnings\n\n`;
+
+            const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
+            #### Terraform Plan 📖\`${{ steps.plan.outcome }}\`
+            #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
+
+            ${tflintResults}
+            ${checkovResults}
+            ${gitleaksResults}
+            ${tfsecResults}
+
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+
+      - name: Terraform Plan Status
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
